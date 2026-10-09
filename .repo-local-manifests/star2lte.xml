@@ -53,6 +53,7 @@
     <remove-project name="platform/prebuilts/abi-dumps/ndk" />
     <remove-project name="platform/prebuilts/abi-dumps/platform" />
     <remove-project name="platform/prebuilts/abi-dumps/vndk" />
+    <remove-project name="platform/test/vts-testcase/vndk" />
     <remove-project name="platform/prebuilts/android-emulator" />
     <remove-project name="platform/prebuilts/bazel/darwin-x86_64" />
     <remove-project name="platform/prebuilts/go/darwin-x86" />
