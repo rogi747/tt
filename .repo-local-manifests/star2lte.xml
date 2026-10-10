@@ -54,4 +54,31 @@
     <remove-project name="platform/prebuilts/bazel/darwin-x86_64" optional="true" />
     <remove-project name="platform/prebuilts/go/darwin-x86" optional="true" />
 
+    <remove-project name="device/google/cuttlefish" optional="true" />
+    <remove-project name="device/google/cuttlefish_prebuilts" optional="true" />
+    <remove-project name="device/generic/goldfish" optional="true" />
+    <remove-project name="device/generic/goldfish-opengl" optional="true" />
+    <remove-project name="platform/prebuilts/qemu-kernel" optional="true" />
+    <remove-project name="device/generic/x86" optional="true" />
+    <remove-project name="device/generic/x86_64" optional="true" />
+    <remove-project name="kernel/prebuilts/4.19/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.4/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.10/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.15/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/mainline/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/4.19/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.4/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.10/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.15/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/mainline/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/4.19/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/4.19/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.10/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.10/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.15/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.15/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.4/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.4/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/mainline/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/mainline/x86-64" optional="true" />
 </manifest>
