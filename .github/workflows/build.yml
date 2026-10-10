@@ -782,8 +782,20 @@ jobs:
           # Do not mirror many gigabytes of compiler output into configure-setup.log.
           exec 1>&3 2>&4
           exec 3>&- 4>&-
+          echo "=== CLEANING UP GIT OBJECTS TO SAVE SPACE ==="
+          # Remove massive git object databases that we don't need for the build
+          # The files remain checked out in the working directory, so Soong won't fail!
+          rm -rf .repo/project-objects/platform/prebuilts/abi-dumps/*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/rust.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/gradle-plugin.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/sdk.git || true
+          rm -rf .repo/project-objects/LineageOS/android_cts.git || true
+          rm -rf .repo/project-objects/platform/external/deqp.git || true
+
           echo "=== GENERATE BUILD GRAPH ==="
           m nothing 2>&1 | tee /tmp/rbe-test/m-nothing.log
+
+
           enforce_initial_disk_guard post-graph
 
           BUILD_NINJA="$ANDROID_BUILD_TOP/out/combined-${TARGET_PRODUCT}.ninja"
