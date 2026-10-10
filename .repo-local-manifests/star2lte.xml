@@ -53,10 +53,40 @@
     <remove-project name="platform/prebuilts/android-emulator" optional="true" />
     <remove-project name="platform/prebuilts/bazel/darwin-x86_64" optional="true" />
     <remove-project name="platform/prebuilts/go/darwin-x86" optional="true" />
-    <remove-project name="LineageOS/android_cts" optional="true" />
-    <remove-project name="platform/external/deqp" optional="true" />
-    <remove-project name="platform/external/deqp-deps/SPIRV-Headers" optional="true" />
-    <remove-project name="platform/external/deqp-deps/SPIRV-Tools" optional="true" />
-    <remove-project name="platform/external/deqp-deps/amber" optional="true" />
-    <remove-project name="platform/external/deqp-deps/glslang" optional="true" />
+    <remove-project name="kernel/prebuilts/4.19/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.4/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.10/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.15/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/mainline/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/4.19/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.4/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.10/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/5.15/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/mainline/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/4.19/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/4.19/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.10/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.10/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.15/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.15/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.4/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/5.4/x86-64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/mainline/arm64" optional="true" />
+    <remove-project name="kernel/prebuilts/common-modules/virtual-device/mainline/x86-64" optional="true" />
+    <remove-project name="device/generic/goldfish" optional="true" />
+    <remove-project name="device/generic/goldfish-opengl" optional="true" />
+    <remove-project name="platform/prebuilts/qemu-kernel" optional="true" />
+    <remove-project name="device/generic/x86" optional="true" />
+    <remove-project name="device/generic/x86_64" optional="true" />
+    <remove-project name="device/generic/car" optional="true" />
+    <remove-project name="device/generic/tv" optional="true" />
+    <remove-project name="device/generic/wear" optional="true" />
+    <remove-project name="platform/test/vts-testcase/fuzz" optional="true" />
+    <remove-project name="platform/test/vts-testcase/hal-trace" optional="true" />
+    <remove-project name="platform/test/vts-testcase/nbu" optional="true" />
+    <remove-project name="platform/test/vts-testcase/performance" optional="true" />
+    <remove-project name="platform/test/vts-testcase/security" optional="true" />
+    <remove-project name="platform/prebuilts/gradle-plugin" optional="true" />
+    <remove-project name="platform/prebuilts/maven_repo/android" optional="true" />
+    <remove-project name="platform/prebuilts/maven_repo/bumptech" optional="true" />
 </manifest>
