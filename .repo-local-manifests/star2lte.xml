@@ -53,9 +53,6 @@
     <remove-project name="platform/prebuilts/android-emulator" optional="true" />
     <remove-project name="platform/prebuilts/bazel/darwin-x86_64" optional="true" />
     <remove-project name="platform/prebuilts/go/darwin-x86" optional="true" />
-
-    <remove-project name="device/google/cuttlefish" optional="true" />
-    <remove-project name="device/google/cuttlefish_prebuilts" optional="true" />
     <remove-project name="device/generic/goldfish" optional="true" />
     <remove-project name="device/generic/goldfish-opengl" optional="true" />
     <remove-project name="platform/prebuilts/qemu-kernel" optional="true" />

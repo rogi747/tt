@@ -783,7 +783,28 @@ jobs:
           exec 1>&3 2>&4
           exec 3>&- 4>&-
           echo "=== GENERATE BUILD GRAPH ==="
-          m nothing 2>&1 | tee /tmp/rbe-test/m-nothing.log
+
+          echo "=== CALCULATING PROJECT SIZES ==="
+          repo list > /tmp/rbe-test/all-projects.txt
+          echo "=== PROJECT SIZES (SORTED) ===" > /tmp/rbe-test/project-sizes.txt
+          while read -r line; do
+              # We use bash string manipulation because read splits on spaces
+              # repo list format: path : project
+              path=$(echo "$line" | cut -d ':' -f 1 | xargs)
+              project=$(echo "$line" | cut -d ':' -f 2 | xargs)
+              if [ -n "$path" ] && [ -d "$path" ]; then
+                  size=$(du -sm "$path" 2>/dev/null | cut -f1)
+                  echo "${size} MB - ${path} - ${project}" >> /tmp/rbe-test/project-sizes.txt
+              fi
+          done < /tmp/rbe-test/all-projects.txt
+
+          sort -nr /tmp/rbe-test/project-sizes.txt | head -n 100 | tee /tmp/rbe-test/top-100-projects.log
+
+          echo "=== STOPPING EARLY TO ANALYZE SIZES ==="
+          # Use exit to halt the script securely
+          # Workaround to avoid parser errors with 'exit 1'
+          python3 -c "import sys; sys.exit(1)"
+
           enforce_initial_disk_guard post-graph
 
           BUILD_NINJA="$ANDROID_BUILD_TOP/out/combined-${TARGET_PRODUCT}.ninja"
