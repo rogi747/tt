@@ -70,7 +70,6 @@
     <remove-project name="platform/test/vts-testcase/performance" />
     <remove-project name="platform/test/vts-testcase/security" />
     <remove-project name="device/generic/car" />
-    <remove-project name="device/generic/wear" />
     <remove-project name="platform/prebuilts/abi-dumps/ndk" />
     <remove-project name="platform/prebuilts/abi-dumps/platform" />
     <remove-project name="platform/prebuilts/abi-dumps/vndk" />
