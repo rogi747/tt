@@ -61,4 +61,21 @@
     <remove-project name="platform/prebuilts/gcc/darwin-x86/x86/x86_64-linux-android-4.9" optional="true" />
     <remove-project name="platform/prebuilts/gcc/darwin-x86/host/i686-apple-darwin-4.2.1" optional="true" />
 
+    <remove-project name="device/google/cuttlefish" />
+    <remove-project name="device/google/cuttlefish_prebuilts" />
+    <remove-project name="platform/test/vts-testcase/fuzz" />
+    <remove-project name="platform/test/vts-testcase/hal" />
+    <remove-project name="platform/test/vts-testcase/hal-trace" />
+    <remove-project name="platform/test/vts-testcase/nbu" />
+    <remove-project name="platform/test/vts-testcase/performance" />
+    <remove-project name="platform/test/vts-testcase/security" />
+    <remove-project name="device/generic/car" />
+    <remove-project name="device/generic/tv" />
+    <remove-project name="device/generic/wear" />
+    <remove-project name="platform/prebuilts/abi-dumps/ndk" />
+    <remove-project name="platform/prebuilts/abi-dumps/platform" />
+    <remove-project name="platform/prebuilts/abi-dumps/vndk" />
+    <remove-project name="platform/test/vts" />
+    <remove-project name="platform/test/vts-testcase/vndk" />
+    <remove-project name="platform/test/vts-testcase/kernel" />
 </manifest>
