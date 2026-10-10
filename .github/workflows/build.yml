@@ -792,10 +792,11 @@ jobs:
           rm -rf .repo/project-objects/LineageOS/android_cts.git || true
           rm -rf .repo/project-objects/platform/external/deqp.git || true
 
+          echo "=== DISK SPACE AFTER GIT OBJECTS CLEANUP ==="
+          df -h / /home/runner/work/los
+
           echo "=== GENERATE BUILD GRAPH ==="
           m nothing 2>&1 | tee /tmp/rbe-test/m-nothing.log
-
-
           enforce_initial_disk_guard post-graph
 
           BUILD_NINJA="$ANDROID_BUILD_TOP/out/combined-${TARGET_PRODUCT}.ninja"
