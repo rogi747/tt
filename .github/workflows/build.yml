@@ -1,23 +1,14 @@
-name: LineageOS 20.0 - star2lte Btrfs ZSTD + RBE16 + LFS
+name: LineageOS 20.0 - star2lte Full ROM Trial (BuildBuddy RBE)
 
 on:
   workflow_dispatch:
-    inputs:
-      workspace_storage:
-        description: "Android workspace: Btrfs ZSTD (default), or uncompressed plain"
-        type: choice
-        required: true
-        default: btrfs_zstd
-        options:
-          - btrfs_zstd
-          - plain
 
 permissions:
   contents: read
 
 concurrency:
   group: los20-star2lte-rbe-full-rom-trial
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   rbe-test:
@@ -26,8 +17,6 @@ jobs:
 
     env:
       BUILDBUDDY_API_KEY: "${{ secrets.BUILDBUDDY_API_KEY }}"
-      WORKSPACE_STORAGE: "${{ inputs.workspace_storage }}"
-      BTRFS_WORKSPACE_IMAGE_GIB: "220"
 
       # Android / Soong RBE
       USE_RBE: "1"
@@ -51,38 +40,14 @@ jobs:
       RBE_reproxy_wait_seconds: "30"
       RBE_v: "2"
 
-      # Android Soong uses remote Ninja concurrency independently of -j2.
-      # Keep the 2-job local pool, highmem pool=1; try up to 16 remote actions.
-      NINJA_REMOTE_NUM_JOBS: "16"
+      # Conservative 2-job build parallelism on GitHub hosted runner.
+      # Keep memory-intensive actions serial to reduce local memory pressure.
+      NINJA_REMOTE_NUM_JOBS: "2"
       NINJA_HIGHMEM_NUM_JOBS: "1"
 
-      # Soong graph generation is local even with BuildBuddy RBE.
-      # Go GC is tuned for the standard ~16-GB GitHub runner.
-      # P0: lower Go GC target; limit only activates with Go >= 1.19.
-      SOONG_GOGC: "25"
-      SOONG_GOMEMLIMIT: "6GiB"
-      # Limit active Go workers during the memory-heavy graph generation only.
-      SOONG_GRAPH_GOMAXPROCS: "2"
-      # Hybrid graph memory: compressed RAM swap first, disk swap second.
-      # ZRAM is best-effort: GitHub runner kernels may not provide the module.
-      SOONG_ZRAM_GIB: "8"
-      SOONG_DISK_SWAP_GIB: "12"
-      POST_GRAPH_DISK_SWAP_GIB: "4"
-      # Keep 12 GiB free after graph swap allocation where possible.
-      SOONG_SWAP_DISK_RESERVE_GIB: "12"
-
-      # P1 storage trim: worktree-only, measured with df before/after.
-      # Preserve Linux toolchains and Android 13 (API 33) reference ABI dumps.
-      STORAGE_TRIM_DARWIN_HOST_TOOLS: "1"
-      # Experimental: keep VNDK ABI versions 32, 33 and R; remove 29..31 only.
-      # Set to "0" to retain all VNDK reference dumps for stricter validation.
-      STORAGE_TRIM_OLD_VNDK_ABI: "1"
-
       # GiB of available disk space (statvfs/df -B1, not rounded df -h).
-      # Experimental 7-GiB floor requested for a deeper build trial.
-      # Never let the free space reach zero; packaging may still need more.
-      DISK_WARN_GIB: "15"
-      DISK_STOP_GIB: "7"
+      DISK_WARN_GIB: "25"
+      DISK_STOP_GIB: "15"
       # Stop the long build early enough to upload logs and a successful ROM.
       # Whole-job limit on GitHub-hosted runners: 360 minutes.
       FULL_ROM_SOFT_DEADLINE_MINUTES: "320"
@@ -161,7 +126,6 @@ jobs:
             rsync \
             schedtool \
             squashfs-tools \
-            btrfs-progs \
             xsltproc \
             zip \
             zlib1g-dev \
@@ -190,42 +154,6 @@ jobs:
             exit 1
           fi
 
-      # A single filesystem for .repo, the entire Android source tree, prebuilts
-      # and out/. The sparse image is a LOGICAL cap, NOT extra physical storage.
-      # Root df, not inner Btrfs df, is the authoritative disk safety guard.
-      - name: Mount compressed Btrfs ZSTD workspace before repo sync
-        if: ${{ inputs.workspace_storage == 'btrfs_zstd' }}
-        working-directory: /home/runner/work
-        shell: bash
-        run: |
-          set -euo pipefail
-          WORKSPACE=/home/runner/work/los
-          BACKING=/tmp/los20-workspace-btrfs.img
-          mkdir -p /tmp/rbe-test "$WORKSPACE"
-          if mountpoint -q "$WORKSPACE" || [ -n "$(ls -A "$WORKSPACE")" ]; then
-            echo '::error::Android workspace must be empty before Btrfs setup.'
-            exit 1
-          fi
-          # Never fallocate the image: physical blocks must grow on demand.
-          truncate -s "${BTRFS_WORKSPACE_IMAGE_GIB}G" "$BACKING"
-          sudo mkfs.btrfs -f -m single -d single "$BACKING" \
-            > /tmp/rbe-test/btrfs-mkfs.log 2>&1
-          sudo mount -t btrfs -o loop,compress=zstd:1,noatime \
-            "$BACKING" "$WORKSPACE"
-          sudo chown "$(id -u):$(id -g)" "$WORKSPACE"
-          test "$(stat -f -c '%T' "$WORKSPACE")" = btrfs
-          echo '=== ANDROID 13 FULL WORKSPACE ZSTD ==='
-          findmnt -T "$WORKSPACE" -o SOURCE,FSTYPE,OPTIONS
-          df -hT / "$WORKSPACE"
-          du -h "$BACKING"
-          printf 'timestamp\tstage\troot_free_bytes\tbtrfs_free_bytes\timage_allocated_bytes\n' \
-            > /tmp/rbe-test/btrfs-storage-samples.tsv
-          root_free="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
-          if (( root_free < DISK_STOP_GIB * 1073741824 )); then
-            echo "::error::Host root disk below ${DISK_STOP_GIB} GiB after Btrfs mount."
-            exit 70
-          fi
-
       - name: Repo init and install local manifest
         working-directory: /home/runner/work
         shell: bash
@@ -235,20 +163,12 @@ jobs:
           git config --global user.email "ci@local"
           git config --global user.name "ci"
           git config --global color.ui false
-          # Initialize filters BEFORE repo sync; LineageOS WebView uses Git LFS.
-          git lfs version
-          git lfs install --skip-repo
 
           mkdir -p /home/runner/work/los
           cd /home/runner/work/los
-          if [ "$WORKSPACE_STORAGE" = btrfs_zstd ]; then
-            mountpoint -q "$PWD" || { echo '::error::Btrfs mount missing before repo init.'; exit 1; }
-            test "$(stat -f -c '%T' "$PWD")" = btrfs
-          fi
 
           repo init \
             --depth=1 \
-            --git-lfs \
             -u https://github.com/LineageOS/android.git \
             -b lineage-20.0
 
@@ -292,32 +212,6 @@ jobs:
           repo manifest -o /tmp/rbe-test/effective-manifest-after-trim.xml
           echo 'P0 trim verified: prebuilts/remoteexecution-client will NOT be repo-synced.' \
             | tee /tmp/rbe-test/p0-storage-trim-status.txt
-
-          echo '=== VERIFY STORAGE PROJECT REMOVALS (EFFECTIVE MANIFEST) ==='
-          for removed in \
-            prebuilts/clang/host/darwin-x86 \
-            prebuilts/android-emulator \
-            prebuilts/bazel/darwin-x86_64 \
-            prebuilts/go/darwin-x86; do
-            if grep -Fxq "$removed" /tmp/rbe-test/manifest-projects-after-trim.txt; then
-              echo "::error::Expected removed project is still present: $removed"
-              exit 1
-            fi
-            echo "Removed from repo sync: $removed"
-          done
-          for required in \
-            device/samsung/star2lte \
-            device/samsung/exynos9810-common \
-            device/samsung_slsi/sepolicy \
-            kernel/samsung/exynos9810 \
-            vendor/samsung/star2lte \
-            vendor/samsung/exynos9810-common \
-            hardware/samsung; do
-            if ! grep -Fxq "$required" /tmp/rbe-test/manifest-projects-after-trim.txt; then
-              echo "::error::Missing required device/vendor project: $required"
-              exit 1
-            fi
-          done
 
           echo "=== LOCAL MANIFEST ==="
           sed -n '1,260p' "$MANIFEST_DST"
@@ -363,91 +257,6 @@ jobs:
 
       # Collect post-sync storage attribution while the tree is still clean.
       # This is diagnostic-only and does not mutate .repo, source, or out.
-      # Prevent a tiny LFS pointer from reaching veridex as an invalid APK.
-      # Some Android 13 trees have WebView inside a parent Git project; resolve
-      # the repository root before applying the LFS include path.
-      - name: Resolve and validate Chromium WebView arm64 Git LFS
-        working-directory: /home/runner/work/los
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/rbe-test
-          LOG=/tmp/rbe-test/webview-lfs-check.log
-          APK=external/chromium-webview/prebuilt/arm64/webview.apk
-          DIR="$(dirname "$APK")"
-          {
-            echo '=== GIT LFS ==='
-            git lfs version
-            echo '=== WEBVIEW LFS PROJECTS ==='
-            repo list -a -p | grep -E '^external/chromium-webview(/|$)' || true
-          } | tee "$LOG"
-
-          # Some manifests don't contain this prebuilt at this exact path.
-          # Do not invent/download an APK from another branch in that case.
-          if [ ! -e "$APK" ]; then
-            if repo list -a -p | grep -Fxq "$DIR"; then
-              echo "::error::WebView arm64 project exists, but APK missing: $APK" | tee -a "$LOG"
-              exit 1
-            fi
-            echo "WebView APK absent at $APK; this manifest may use another WebView source." | tee -a "$LOG"
-            exit 0
-          fi
-
-          REPO_ROOT="$(git -C "$DIR" rev-parse --show-toplevel)"
-          REL_APK="$(realpath --relative-to="$REPO_ROOT" "$PWD/$APK")"
-          {
-            echo "git_root=$REPO_ROOT"
-            echo "git_relative_apk=$REL_APK"
-            echo "original_size_bytes=$(stat -c %s "$APK")"
-            git -C "$REPO_ROOT" lfs ls-files --long | grep -F 'webview.apk' || true
-          } | tee -a "$LOG"
-          if [[ "$(head -c 96 "$APK")" == 'version https://git-lfs.github.com/spec/v1'* ]]; then
-            echo 'Detected Git LFS pointer; fetching the exact checkout revision.' | tee -a "$LOG"
-            git -C "$REPO_ROOT" lfs pull --include="$REL_APK" --exclude='' \
-              2>&1 | tee /tmp/rbe-test/webview-lfs-pull.log
-            git -C "$REPO_ROOT" lfs checkout "$REL_APK" \
-              2>&1 | tee -a /tmp/rbe-test/webview-lfs-pull.log
-          fi
-          python3 - "$APK" <<'PYWEBVIEW'
-          import pathlib,sys,zipfile
-          file=pathlib.Path(sys.argv[1])
-          with file.open('rb') as f: prefix=f.read(256)
-          if prefix.startswith(b'version https://git-lfs.github.com/spec/v1'):
-              sys.exit('ERROR: WebView APK is still an LFS pointer')
-          if file.stat().st_size < 10 * 1024 * 1024 or prefix[:2] != b'PK':
-              sys.exit('ERROR: WebView prebuilt is too small or not an APK/ZIP')
-          with zipfile.ZipFile(file) as apk:
-              if 'AndroidManifest.xml' not in apk.namelist():
-                  sys.exit('ERROR: WebView APK missing AndroidManifest.xml')
-              print(f'WebView arm64 APK verified; bytes={file.stat().st_size}')
-          PYWEBVIEW
-          echo '=== WEBVIEW APK ZIP CRC CHECK ===' | tee -a "$LOG"
-          unzip -tqq "$APK" | tee /tmp/rbe-test/webview-unzip-test.txt
-          sha256sum "$APK" | tee /tmp/rbe-test/webview-sha256.txt
-          echo 'WebView LFS preflight passed.' | tee -a "$LOG"
-
-      - name: Record Btrfs workspace use after repo sync
-        if: ${{ inputs.workspace_storage == 'btrfs_zstd' }}
-        working-directory: /home/runner/work/los
-        shell: bash
-        run: |
-          set -euo pipefail
-          BACKING=/tmp/los20-workspace-btrfs.img
-          mountpoint -q "$PWD"
-          test "$(stat -f -c '%T' "$PWD")" = btrfs
-          echo '=== WORKSPACE AFTER SYNC ==='
-          df -hT / "$PWD"
-          stat -c 'image_size_bytes=%s image_allocated_blocks=%b block_bytes=%B' "$BACKING"
-          sudo btrfs filesystem usage -b "$PWD" \
-            > /tmp/rbe-test/btrfs-post-sync-usage.txt 2>&1 || true
-          root_avail="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
-          inner_avail="$(df -B1 --output=avail "$PWD" | tail -n1 | tr -d ' ')"
-          if (( root_avail < DISK_STOP_GIB * 1073741824 || inner_avail < DISK_STOP_GIB * 1073741824 )); then
-            echo '::error::Disk low after repo sync, before Android build.'
-            exit 70
-          fi
-
       - name: Profile storage after repo sync
         if: success()
         working-directory: /home/runner/work/los
@@ -563,120 +372,6 @@ jobs:
 
           echo '=== DEEP STORAGE BASELINE COMPLETE ==='
 
-      # P1: remove only unwanted host-platform binaries and historical
-      # ABI reference dumps from checked-out worktrees. This DOES NOT reclaim
-      # packed objects in .repo/project-objects: they remain for this run.
-      - name: P1 reclaim unused Darwin binaries and historical VNDK ABI worktrees
-        if: success()
-        working-directory: /home/runner/work/los
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          set -euo pipefail
-          REPORT=/tmp/rbe-test/storage-trim-p1.log
-          TABLE=/tmp/rbe-test/storage-trim-p1.tsv
-          TS=/tmp/rbe-test/resource-samples.tsv
-          mkdir -p /tmp/rbe-test
-          printf 'path\tpre_kib\tstatus\n' > "$TABLE"
-          exec > >(tee "$REPORT") 2>&1
-
-          echo '=== P1 STORAGE TRIM (WORKTREE ONLY) ==='
-          echo "Darwin trimming: ${STORAGE_TRIM_DARWIN_HOST_TOOLS}"
-          echo "Historical VNDK ABI trimming: ${STORAGE_TRIM_OLD_VNDK_ABI}"
-          before_bytes="$(df -B1 --output=avail "$PWD" | tail -n1 | tr -d ' ')"
-          echo "disk_available_before_bytes=$before_bytes"
-
-          # Whitelist protects source and vendor trees from dynamic path input.
-          trim_known_path() {
-            local rel="$1" kib=0
-            case "$rel" in
-              prebuilts/rust/darwin-x86|prebuilts/clang-tools/darwin-x86|prebuilts/build-tools/darwin-x86|\
-              prebuilts/jdk/jdk8/darwin-x86|prebuilts/jdk/jdk9/darwin-x86|\
-              prebuilts/jdk/jdk11/darwin-x86|prebuilts/jdk/jdk17/darwin-x86|\
-              prebuilts/abi-dumps/vndk/29|prebuilts/abi-dumps/vndk/30|prebuilts/abi-dumps/vndk/31)
-                ;;
-              *) echo "::error::Refusing non-whitelisted removal: $rel"; return 2 ;;
-            esac
-            if [ -L "$rel" ]; then
-              echo "SKIP symlink $rel"
-              printf '%s\t0\tskipped-symlink\n' "$rel" >> "$TABLE"
-              return 0
-            fi
-            if [ ! -d "$rel" ]; then
-              echo "SKIP absent $rel"
-              printf '%s\t0\tabsent\n' "$rel" >> "$TABLE"
-              return 0
-            fi
-            kib="$(du -sk -- "$rel" | awk '{print $1}')"
-            echo "TRIM $rel size=$((kib / 1024)) MiB (checked-out files only)"
-            rm -rf -- "$rel"
-            if [ -e "$rel" ]; then
-              echo "::error::Failed to remove $rel"
-              return 1
-            fi
-            printf '%s\t%s\tremoved\n' "$rel" "$kib" >> "$TABLE"
-          }
-
-          if [ "${STORAGE_TRIM_DARWIN_HOST_TOOLS}" = 1 ]; then
-            # Abort the Linux-host trim if the Rust Linux toolchain is absent.
-            if [ -d prebuilts/rust/linux-x86 ] && [ -d prebuilts/clang/host/linux-x86 ]; then
-              for rel in \
-                prebuilts/rust/darwin-x86 \
-                prebuilts/clang-tools/darwin-x86 \
-                prebuilts/build-tools/darwin-x86 \
-                prebuilts/jdk/jdk8/darwin-x86 \
-                prebuilts/jdk/jdk9/darwin-x86 \
-                prebuilts/jdk/jdk11/darwin-x86 \
-                prebuilts/jdk/jdk17/darwin-x86; do
-                trim_known_path "$rel"
-              done
-            else
-              echo '::warning::Linux host toolchains not found; Darwin trim skipped for safety.'
-            fi
-          fi
-
-          if [ "${STORAGE_TRIM_OLD_VNDK_ABI}" = 1 ]; then
-            # Android 13 uses API/VNDK 33 reference dumps; keep 32 as
-            # compatibility headroom, plus 33, R, files at repository root.
-            # Do not remove the abi-dumps project or disable ABI checks.
-            root=prebuilts/abi-dumps/vndk
-            if [ ! -L "$root" ] && [ -s "$root/Android.bp" ] \
-               && [ -d "$root/32" ] && [ -d "$root/33" ]; then
-              echo 'VNDK ABI trim guard passed: versions 32 and 33 and Android.bp exist.'
-              for rel in \
-                prebuilts/abi-dumps/vndk/29 \
-                prebuilts/abi-dumps/vndk/30 \
-                prebuilts/abi-dumps/vndk/31; do
-                trim_known_path "$rel"
-              done
-            else
-              echo '::warning::VNDK ABI layout differs from Android 13 expectation; skipping ABI trim.'
-            fi
-          fi
-
-          # Strict post-checks for the host toolchain and current ABI reference.
-          test -d prebuilts/rust/linux-x86
-          test -d prebuilts/clang/host/linux-x86
-          test -d prebuilts/abi-dumps/vndk/33
-          test -d prebuilts/abi-dumps/vndk/32
-          after_bytes="$(df -B1 --output=avail "$PWD" | tail -n1 | tr -d ' ')"
-          reclaimed_bytes="$((after_bytes - before_bytes))"
-          echo '=== P1 STORAGE RESULT ==='
-          echo "disk_available_after_bytes=$after_bytes"
-          echo "disk_available_delta_bytes=$reclaimed_bytes"
-          df -h "$PWD"
-          cat "$TABLE"
-          if (( reclaimed_bytes < 0 )); then
-            echo '::warning::Net free space decreased during trim; check concurrent processes.'
-          fi
-          if [ -s "$TS" ]; then
-            printf '%s\tpost-worktree-trim\t%s\t%s\t%s\n' \
-              "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$after_bytes" \
-              "$(df -B1 --output=used "$PWD" | tail -n1 | tr -d ' ')" \
-              "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" >> "$TS"
-          fi
-          echo 'P1 trim changes the checkout only, not .repo Git object packs.'
-
       - name: Verify star2lte product registration
         working-directory: /home/runner/work/los
         shell: bash
@@ -710,62 +405,6 @@ jobs:
       # Reclient 0.25 (2021) predates the Remote Execution API fix for
       # working-directory-relative output paths (SDK fix Nov 2021).
       # Pin a coherent prebuilt release rather than mixing rewrapper/reproxy.
-      # Ubuntu 24.04 ships ncurses6; legacy RenderScript Clang needs ncurses5.
-      # Use the matching Jammy security packages, pinned with checksums from
-      # packages.ubuntu.com, instead of making unsafe SONAME symlinks.
-      - name: Install and verify legacy ncurses5 for RenderScript
-        working-directory: /home/runner/work/los
-        shell: bash
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/rbe-test
-          LOG=/tmp/rbe-test/legacy-ncurses5-check.log
-          exec > >(tee "$LOG") 2>&1
-
-          VERSION=6.3-2ubuntu0.3
-          BASE=https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses
-          PKG_DIR="$RUNNER_TEMP/ncurses5-jammy"
-          mkdir -p "$PKG_DIR"
-          # SHA256 hashes published by Ubuntu for the amd64 .deb files.
-          NCURSES_SHA=58da01991712c6856af0658dc5e9cb533c1a6854ab950055ade185e35bc9c276
-          TINFO_SHA=4df4288404108f1a156d014e8764a064e977e34e6d44931ab60451694c03c90d
-
-          for pkg in libtinfo5 libncurses5; do
-            file="${pkg}_${VERSION}_amd64.deb"
-            curl --fail --location --show-error --silent \
-              --retry 3 --connect-timeout 15 --max-time 90 \
-              "$BASE/$file" -o "$PKG_DIR/$file"
-            test "$(dpkg-deb -f "$PKG_DIR/$file" Package)" = "$pkg"
-            test "$(dpkg-deb -f "$PKG_DIR/$file" Version)" = "$VERSION"
-            test "$(dpkg-deb -f "$PKG_DIR/$file" Architecture)" = amd64
-          done
-          printf '%s  %s\n' \
-            "$TINFO_SHA" "$PKG_DIR/libtinfo5_${VERSION}_amd64.deb" \
-            "$NCURSES_SHA" "$PKG_DIR/libncurses5_${VERSION}_amd64.deb" \
-            | sha256sum --check --status
-          echo '=== SHA256 checks passed (Ubuntu Jammy security) ==='
-
-          sudo dpkg -i \
-            "$PKG_DIR/libtinfo5_${VERSION}_amd64.deb" \
-            "$PKG_DIR/libncurses5_${VERSION}_amd64.deb"
-          sudo ldconfig
-          ldconfig -p | grep -F 'libtinfo.so.5'
-          ldconfig -p | grep -F 'libncurses.so.5'
-          echo '=== LEGACY RENDERSCRIPT CLANG DEPENDENCIES ==='
-          CLANG=prebuilts/clang/host/linux-x86/clang-3289846/bin/clang.real
-          if [ ! -x "$CLANG" ]; then
-            echo "::error::Expected legacy RenderScript Clang missing: $CLANG"
-            exit 1
-          fi
-          ldd "$CLANG" | tee /tmp/rbe-test/legacy-clang-ldd.txt
-          if grep -q 'not found' /tmp/rbe-test/legacy-clang-ldd.txt; then
-            echo '::error::Legacy RenderScript Clang still has unresolved shared libraries.'
-            exit 1
-          fi
-          "$CLANG" --version
-          echo '=== LEGACY RENDERSCRIPT CLANG PREFLIGHT PASSED ==='
-
       - name: Install compatible reclient 0.57.0 (pinned AOSP)
         working-directory: /home/runner/work/los
         timeout-minutes: 20
@@ -953,138 +592,13 @@ jobs:
           echo "::error::BuildBuddy gRPC bridge failed to start."
           exit 1
 
-      - name: Configure hybrid ZRAM and disk swap for Soong graph
-        working-directory: /home/runner/work/los
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/rbe-test
-          umask 077
-          ZRAM_STATUS=/tmp/rbe-test/zram-status.txt
-          DISK_STATUS=/tmp/rbe-test/swap-status.txt
-          ZRAM_DEVICE_FILE=/tmp/rbe-test/zram-device.txt
-          BASE_SWAP=/mnt/soong-swap-base
-          GRAPH_SWAP=/mnt/soong-swap-graph
-          BASE_GIB="${POST_GRAPH_DISK_SWAP_GIB}"
-          GIB=1073741824
-          : > "$ZRAM_STATUS"
-          : > "$DISK_STATUS"
-          rm -f "$ZRAM_DEVICE_FILE"
-
-          # A dedicated new device only: do not reset or alter existing swap.
-          echo '=== ZRAM CAPABILITY / SETUP ==='
-          if ! command -v zramctl >/dev/null 2>&1; then
-            printf 'status=unavailable\nreason=zramctl-not-installed\n' > "$ZRAM_STATUS"
-          else
-            # It may already be built into the kernel; modprobe failure is not fatal.
-            sudo modprobe zram num_devices=1 2>>/tmp/rbe-test/zram-setup-errors.log || true
-            zram_dev=''
-            # lz4 tends to minimize CPU overhead; use kernel default if absent.
-            if zram_dev="$(sudo zramctl --find --size "${SOONG_ZRAM_GIB}G" --algorithm lz4 2>>/tmp/rbe-test/zram-setup-errors.log)"; then
-              zram_algorithm=lz4
-            elif zram_dev="$(sudo zramctl --find --size "${SOONG_ZRAM_GIB}G" 2>>/tmp/rbe-test/zram-setup-errors.log)"; then
-              zram_algorithm=kernel-default
-            else
-              zram_dev=''
-              zram_algorithm=unavailable
-            fi
-            if [ -n "$zram_dev" ] && [ -b "$zram_dev" ] \
-               && sudo mkswap -f "$zram_dev" >/dev/null 2>>/tmp/rbe-test/zram-setup-errors.log \
-               && sudo swapon --priority 100 "$zram_dev" 2>>/tmp/rbe-test/zram-setup-errors.log; then
-              printf '%s\n' "$zram_dev" > "$ZRAM_DEVICE_FILE"
-              printf 'status=enabled\ndevice=%s\nsize_gib=%s\nalgorithm=%s\npriority=100\n' \
-                "$zram_dev" "$SOONG_ZRAM_GIB" "$zram_algorithm" > "$ZRAM_STATUS"
-              echo "ZRAM activated: $zram_dev size=${SOONG_ZRAM_GIB}GiB algorithm=$zram_algorithm priority=100"
-            else
-              printf 'status=unavailable\nreason=kernel-or-activation-error\n' > "$ZRAM_STATUS"
-              if [ -n "$zram_dev" ]; then
-                sudo swapoff "$zram_dev" >/dev/null 2>&1 || true
-                # Only reset if not registered as active swap.
-                if ! swapon --noheadings --show=NAME | grep -Fxq "$zram_dev"; then
-                  sudo zramctl --reset "$zram_dev" >/dev/null 2>&1 || true
-                fi
-              fi
-              echo '::warning::ZRAM unavailable; continuing with disk swap fallback.'
-            fi
-          fi
-
-          # Disk-swap layout: 4-GiB baseline + 8-GiB graph-only extension.
-          # Higher priority on baseline ensures graph-only file is used last,
-          # improving the chance it is empty after the Soong process exits.
-          # Never allocate below the reserved free-space floor.
-          echo '=== DISK SWAP SIZING ==='
-          disk_free_bytes="$(df -B1 --output=avail /mnt | tail -n1 | tr -d ' ')"
-          disk_free_gib=$((disk_free_bytes / GIB))
-          reserve_gib="${SOONG_SWAP_DISK_RESERVE_GIB}"
-          target_gib="${SOONG_DISK_SWAP_GIB}"
-          if (( disk_free_bytes < (target_gib + reserve_gib) * GIB )); then
-            # A smaller fallback still respects the same reserve.
-            target_gib=$((disk_free_gib - reserve_gib))
-            if (( target_gib > SOONG_DISK_SWAP_GIB )); then target_gib="$SOONG_DISK_SWAP_GIB"; fi
-          fi
-          if (( target_gib < BASE_GIB )); then
-            echo "::warning::Not enough disk for even ${BASE_GIB}GiB swap with ${reserve_gib}GiB reserve."
-            target_gib=0
-          fi
-          printf 'status=disabled\ndisk_free_before_gib=%s\nrequested_gib=%s\nallocated_gib=0\nreserve_gib=%s\n' \
-            "$disk_free_gib" "$SOONG_DISK_SWAP_GIB" "$reserve_gib" > "$DISK_STATUS"
-          allocate_swap() {
-            local path="$1" size_gib="$2" priority="$3"
-            if ! sudo fallocate -l "${size_gib}G" "$path"; then
-              sudo rm -f "$path" || true
-              return 1
-            fi
-            sudo chmod 600 "$path"
-            if sudo mkswap "$path" >/dev/null && sudo swapon --priority "$priority" "$path"; then
-              echo "SWAP_ON path=$path size_gib=$size_gib priority=$priority"
-              return 0
-            fi
-            sudo swapoff "$path" >/dev/null 2>&1 || true
-            sudo rm -f "$path" || true
-            return 1
-          }
-          allocated=0
-          if (( target_gib >= BASE_GIB )); then
-            if allocate_swap "$BASE_SWAP" "$BASE_GIB" 20; then
-              allocated="$BASE_GIB"
-              graph_gib=$((target_gib - BASE_GIB))
-              if (( graph_gib > 0 )); then
-                if allocate_swap "$GRAPH_SWAP" "$graph_gib" 10; then
-                  allocated=$((allocated + graph_gib))
-                else
-                  echo '::warning::Graph-only swap allocation failed, base swap still enabled.'
-                fi
-              fi
-            else
-              echo '::warning::Baseline disk swap allocation failed.'
-            fi
-          fi
-          printf 'status=%s\ndisk_free_before_gib=%s\nrequested_gib=%s\nallocated_gib=%s\nreserve_gib=%s\nbase_gib=%s\n' \
-            "$( (( allocated > 0 )) && echo enabled || echo disabled)" \
-            "$disk_free_gib" "$SOONG_DISK_SWAP_GIB" "$allocated" "$reserve_gib" "$BASE_GIB" \
-            > "$DISK_STATUS"
-          if (( allocated < SOONG_DISK_SWAP_GIB )); then
-            echo "::warning::Disk swap available ${allocated}/${SOONG_DISK_SWAP_GIB} GiB (disk-reserve safeguard)."
-          fi
-          echo '=== ACTIVE HYBRID SWAP ==='
-          cat "$ZRAM_STATUS" "$DISK_STATUS"
-          swapon --show=NAME,TYPE,SIZE,USED,PRIO || true
-          zramctl || true
-          free -h
-          df -h /mnt /home/runner/work/los
-          # Failing to activate any swap is not a successful 15-GiB trial.
-          if ! swapon --noheadings --show=NAME | grep -q .; then
-            echo '::error::No active swap device; aborting before the known Soong memory peak.'
-            exit 1
-          fi
-
       - name: Configure Lineage and build full star2lte ROM via BuildBuddy
         working-directory: /home/runner/work/los
         # The 320-minute job-clock guard below leaves time for cleanup/upload.
         timeout-minutes: 325
         shell: bash
         run: |
-          set -eo pipefail
+          set -Eeo pipefail
           mkdir -p /tmp/rbe-test
 
           # P0.1: capture early setup output, even when envsetup or lunch fails
@@ -1105,7 +619,7 @@ jobs:
             LAST_FAILURE_LINE="$1"
             LAST_FAILURE_COMMAND="$2"
             # Never enable set -x: BuildBuddy credentials are in the environment.
-            printf 'Failure observed at line=%s in stage=%s\n' "$LAST_FAILURE_LINE" "$CURRENT_STAGE" >&2
+            printf 'Failure observed at line=%s in stage=%s\n' "$LAST_FAILURE_LINE" "$CURRENT_STAGE"
           }
           on_exit() {
             local rc=$?
@@ -1134,33 +648,7 @@ jobs:
                 > /tmp/rbe-test/configure-success.txt
             fi
           }
-          on_signal() {
-            local signal="$1" rc="$2"
-            trap - TERM INT
-            printf 'signal=%s\nstage=%s\ntimestamp=%s\nrun_id=%s\nattempt=%s\n' \
-              "$signal" "$CURRENT_STAGE" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-              "${GITHUB_RUN_ID:-unknown}" "${GITHUB_RUN_ATTEMPT:-unknown}" \
-              > /tmp/rbe-test/termination-signal.txt
-            {
-              echo '=== SIGNAL MEMORY SNAPSHOT ==='
-              free -h
-              swapon --show || true
-              ps -eo pid,ppid,rss,stat,comm --sort=-rss | head -n 18 || true
-              if [ -r /sys/fs/cgroup/memory.events ]; then
-                echo '=== MEMORY CGROUP EVENTS ==='
-                cat /sys/fs/cgroup/memory.events
-              fi
-              grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat || true
-              if declare -F record_memory_pressure >/dev/null; then
-                record_memory_pressure "signal-$signal" || true
-              fi
-            } >> /tmp/rbe-test/memory-pressure.log 2>&1
-            echo "::error::Received $signal during $CURRENT_STAGE; SIGTERM alone cannot distinguish cancellation from resource pressure." >&2
-            exit "$rc"
-          }
           trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
-          trap 'on_signal TERM 143' TERM
-          trap 'on_signal INT 130' INT
           trap on_exit EXIT
           mark_stage configure-start
 
@@ -1180,29 +668,11 @@ jobs:
             echo "::error::Missing build/envsetup.sh; check repo sync and working-directory."
             exit 1
           fi
-          # Android envsetup/lunch are designed to run in an interactive-like
-          # shell. Avoid inherited ERR traps changing command-substitution output
-          # (previously visible as the bogus ".../Failure observed" filename).
-          trap - ERR
-          set +e
           mark_stage envsetup
           source build/envsetup.sh
-          ENVSETUP_RC=$?
-          if [ "$ENVSETUP_RC" -ne 0 ]; then
-            echo "::error::envsetup.sh returned $ENVSETUP_RC" >&2
-            exit "$ENVSETUP_RC"
-          fi
           echo '=== ENVSETUP PASSED ==='
           mark_stage lunch
           lunch lineage_star2lte-userdebug
-          LUNCH_RC=$?
-          # Restore strict error checking only after the Lineage shell setup.
-          set -e
-          trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
-          if [ "$LUNCH_RC" -ne 0 ]; then
-            echo "::error::lunch returned $LUNCH_RC" >&2
-            exit "$LUNCH_RC"
-          fi
           echo '=== LUNCH PASSED ==='
           mark_stage java-selection
 
@@ -1216,34 +686,6 @@ jobs:
           fi
           export USE_CCACHE=0
           export CCACHE_DISABLE=1
-          # The Android 13 prebuilt Go toolchain may be older than Go 1.19.
-          # GOMEMLIMIT does not exist on Go 1.18; never claim it worked there.
-          export GOGC="$SOONG_GOGC"
-          unset GOMEMLIMIT || true
-          GO_BIN="$PWD/prebuilts/go/linux-x86/bin/go"
-          GO_VERSION='unavailable'
-          GO_LIMIT_MODE='unsupported-or-unverified'
-          if [ -x "$GO_BIN" ]; then
-            GO_VERSION="$("$GO_BIN" version 2>&1 || true)"
-            if [[ "$GO_VERSION" =~ go([0-9]+)\.([0-9]+) ]]; then
-              GO_MAJOR="${BASH_REMATCH[1]}"
-              GO_MINOR="${BASH_REMATCH[2]}"
-              if (( GO_MAJOR > 1 || (GO_MAJOR == 1 && GO_MINOR >= 19) )); then
-                export GOMEMLIMIT="$SOONG_GOMEMLIMIT"
-                GO_LIMIT_MODE='enabled-soft-limit'
-              fi
-            fi
-          fi
-          printf 'go_tool=%s\ngo_version=%s\ngogc=%s\ngomemlimit_mode=%s\ngomemlimit_value=%s\n' \
-            "$GO_BIN" "$GO_VERSION" "$GOGC" "$GO_LIMIT_MODE" \
-            "${GOMEMLIMIT:-disabled}" > /tmp/rbe-test/soong-go-runtime.txt
-          cat /tmp/rbe-test/soong-go-runtime.txt
-          if [ "$GO_LIMIT_MODE" != 'enabled-soft-limit' ]; then
-            echo '::warning::Prebuilt Go is older than 1.19 or unverified: GOMEMLIMIT=6GiB cannot be guaranteed. GOGC=25 is still applied.'
-          fi
-          echo '=== SWAP ==='
-          free -h
-          swapon --show || true
           echo "=== JAVA VERSION ==="
           java -version 2>&1 || true
 
@@ -1305,9 +747,6 @@ jobs:
             echo "RBE_v=${RBE_v}"
             echo "RBE_output_dir=${RBE_output_dir}"
             echo "NINJA_REMOTE_NUM_JOBS=${NINJA_REMOTE_NUM_JOBS}"
-            echo "NINJA_HIGHMEM_NUM_JOBS=${NINJA_HIGHMEM_NUM_JOBS}"
-            echo "NINJA_LOCAL_PARALLEL=2"
-            echo "WORKSPACE_STORAGE=${WORKSPACE_STORAGE}"
           } | tee /tmp/rbe-test/rbe-env.txt
 
           # Write stage-specific samples for easy comparison, using bytes
@@ -1316,33 +755,13 @@ jobs:
           if [ ! -f "$DISK_SAMPLES" ]; then
             printf 'timestamp\tstage\tdisk_available_bytes\tdisk_used_bytes\tmem_available_kib\n' > "$DISK_SAMPLES"
           fi
-          # Btrfs loop-image logical capacity is NOT host free space.
-          # Both root and inner Btrfs are checked, and the smaller governs.
-          BTRFS_ACTIVE=0
-          BTRFS_BACKING=/tmp/los20-workspace-btrfs.img
-          if [ "$WORKSPACE_STORAGE" = btrfs_zstd ]; then
-            mountpoint -q "$PWD" || { echo '::error::Btrfs mount lost'; exit 70; }
-            test "$(stat -f -c '%T' "$PWD")" = btrfs
-            test -f "$BTRFS_BACKING"
-            BTRFS_ACTIVE=1
-          fi
           disk_sample() {
-            local stage="$1" root_avail root_used inner_avail available mem alloc blocks bsize
-            root_avail="$(df -B1 --output=avail / | tail -n 1 | tr -d ' ')"
-            root_used="$(df -B1 --output=used / | tail -n 1 | tr -d ' ')"
-            inner_avail="$(df -B1 --output=avail "$PWD" | tail -n 1 | tr -d ' ')"
-            available="$root_avail"
-            if (( inner_avail < available )); then available="$inner_avail"; fi
+            local stage="$1" available used mem
+            available="$(df -B1 --output=avail "$PWD" | tail -n 1 | tr -d ' ')"
+            used="$(df -B1 --output=used "$PWD" | tail -n 1 | tr -d ' ')"
             mem="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
             printf '%s\t%s\t%s\t%s\t%s\n' \
-              "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$stage" "$available" "$root_used" "$mem" >> "$DISK_SAMPLES"
-            if (( BTRFS_ACTIVE == 1 )); then
-              read -r blocks bsize < <(stat -c '%b %B' "$BTRFS_BACKING")
-              alloc=$((blocks*bsize))
-              printf '%s\t%s\t%s\t%s\t%s\n' \
-                "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$stage" "$root_avail" "$inner_avail" "$alloc" \
-                >> /tmp/rbe-test/btrfs-storage-samples.tsv
-            fi
+              "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$stage" "$available" "$used" "$mem" >> "$DISK_SAMPLES"
             printf '%s\n' "$available"
           }
           enforce_initial_disk_guard() {
@@ -1350,353 +769,14 @@ jobs:
             available="$(disk_sample "$stage")"
             threshold=$((DISK_STOP_GIB * 1024 * 1024 * 1024))
             if (( available < threshold )); then
-              echo "::error::Root/Btrfs available below ${DISK_STOP_GIB} GiB at ${stage}."
-              df -h / "$PWD"
-              exit 70
+              echo "::error::Available disk below ${DISK_STOP_GIB} GiB at ${stage}; refusing to start/continue build."
+              df -h /home/runner/work/los
+              exit 1
             fi
-            echo "=== DISK AT ${stage}: $((available / 1073741824)) GiB physical-safe free ==="
+            echo "=== DISK AT ${stage}: $((available / 1073741824)) GiB free ==="
           }
-          # The 320-minute deadline is measured from post-reclaim, not from
-          # the start of bacon. Supervise Soong graph generation as well.
-          if [ -s /tmp/rbe-test/job-start-epoch.txt ]; then
-            JOB_START_EPOCH="$(cat /tmp/rbe-test/job-start-epoch.txt)"
-          else
-            JOB_START_EPOCH="$(date +%s)"
-          fi
-          SOFT_DEADLINE_EPOCH=$(( JOB_START_EPOCH + FULL_ROM_SOFT_DEADLINE_MINUTES * 60 ))
-          echo "=== WHOLE-JOB SOFT DEADLINE (UTC) ==="
-          date -u -d "@$SOFT_DEADLINE_EPOCH" +'%Y-%m-%dT%H:%M:%SZ'
-          if (( $(date +%s) >= SOFT_DEADLINE_EPOCH )); then
-            echo '::error::Whole-job soft deadline already reached before Soong graph generation.'
-            exit 71
-          fi
-
-          stop_process_tree() {
-            local pid="$1" child
-            while IFS= read -r child; do
-              [ -n "$child" ] || continue
-              stop_process_tree "$child"
-            done < <(pgrep -P "$pid" 2>/dev/null || true)
-            kill -TERM "$pid" 2>/dev/null || true
-          }
-          # Identify the current cgroup (GitHub-hosted Ubuntu usually uses v2).
-          # Always prefer the process's own cgroup, not host-wide counters.
-          CGROUP_MEMORY_DIR=''
-          if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
-            CGROUP_REL="$(awk -F: '$1=="0" {print $3; exit}' /proc/self/cgroup)"
-            if [ -d "/sys/fs/cgroup${CGROUP_REL}" ]; then
-              CGROUP_MEMORY_DIR="/sys/fs/cgroup${CGROUP_REL}"
-            elif [ -d /sys/fs/cgroup ]; then
-              CGROUP_MEMORY_DIR=/sys/fs/cgroup
-            fi
-          fi
-          cgroup_read() {
-            local name="$1" file
-            file="${CGROUP_MEMORY_DIR}/${name}"
-            if [ -n "$CGROUP_MEMORY_DIR" ] && [ -r "$file" ]; then
-              cat "$file" 2>/dev/null || printf 'na'
-            else
-              printf 'na'
-            fi
-          }
-          cgroup_event_value() {
-            local name="$1" file
-            file="${CGROUP_MEMORY_DIR}/memory.events"
-            if [ -n "$CGROUP_MEMORY_DIR" ] && [ -r "$file" ]; then
-              awk -v key="$name" '$1==key {print $2; found=1; exit} END {if (!found) print "na"}' "$file"
-            else
-              printf 'na'
-            fi
-          }
-          # Top RSS processes and Soong's VmRSS/VmHWM/VmSwap identify whether
-          # Go/Soong or another host process is consuming the RAM.
-          record_memory_pressure() {
-            local label="$1" pid
-            {
-              echo "=== $label $(date -u +'%Y-%m-%dT%H:%M:%SZ') ==="
-              free -h
-              swapon --show || true
-              zramctl 2>/dev/null || true
-              if [ -r /tmp/rbe-test/zram-device.txt ]; then
-                zram_dev="$(cat /tmp/rbe-test/zram-device.txt)"
-                zram_node="${zram_dev##*/}"
-                if [ -r "/sys/block/${zram_node}/mm_stat" ]; then
-                  echo "--- ZRAM ${zram_node} MM_STAT (orig/compressed/mem_used in bytes) ---"
-                  cat "/sys/block/${zram_node}/mm_stat"
-                fi
-              fi
-              echo '--- TOP RSS (KiB; command names only; no args or secrets) ---'
-              ps -eo pid,ppid,rss,stat,comm --sort=-rss | head -n 18 || true
-              echo '--- SOONG BUILD PROCESS DETAILS ---'
-              while IFS= read -r pid; do
-                [ -n "$pid" ] || continue
-                echo "pid=$pid"
-                grep -E '^(Name|State|VmRSS|VmHWM|VmSwap|VmSize|Threads):' \
-                  "/proc/$pid/status" 2>/dev/null || true
-                if [ -r "/proc/$pid/smaps_rollup" ]; then
-                  grep -E '^(Rss|Pss|Swap|Private_Dirty):' \
-                    "/proc/$pid/smaps_rollup" 2>/dev/null || true
-                fi
-              done < <(pgrep -x soong_build 2>/dev/null || true)
-              echo '--- CGROUP V2 MEMORY ---'
-              echo "cgroup_memory_dir=${CGROUP_MEMORY_DIR:-not-available}"
-              for metric in memory.current memory.peak memory.max memory.swap.current \
-                            memory.swap.peak memory.swap.max memory.events memory.events.local; do
-                printf '%s: ' "$metric"
-                if [[ "$metric" == *events* ]]; then printf '\n'; fi
-                cgroup_read "$metric"
-                printf '\n'
-              done
-              echo '--- PSI / HOST VMSTAT ---'
-              [ ! -r /proc/pressure/memory ] || cat /proc/pressure/memory
-              grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat || true
-            } >> /tmp/rbe-test/memory-pressure.log 2>&1
-          }
-          # Machine-readable samples preserve last-second state on cancellation.
-          SOONG_MEMORY_TSV=/tmp/rbe-test/soong-memory-samples.tsv
-          printf 'timestamp\tphase\tmem_available_kib\tswap_free_kib\tsoong_rss_kib\tsoong_hwm_kib\tsoong_swap_kib\tsoong_pids\tcgroup_memory_current_bytes\tcgroup_memory_peak_bytes\tcgroup_swap_current_bytes\tcgroup_swap_peak_bytes\tcgroup_oom\tcgroup_oom_kill\n' \
-            > "$SOONG_MEMORY_TSV"
-          sample_soong_memory() {
-            local phase="$1" pid rss=0 hwm=0 swap=0 pids=0 value
-            local mem_avail swap_free
-            mem_avail="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-            swap_free="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
-            while IFS= read -r pid; do
-              [ -n "$pid" ] || continue
-              [ -r "/proc/$pid/status" ] || continue
-              pids=$((pids + 1))
-              value="$(awk '/^VmRSS:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"
-              rss=$((rss + ${value:-0}))
-              value="$(awk '/^VmHWM:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"
-              hwm=$((hwm + ${value:-0}))
-              value="$(awk '/^VmSwap:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"
-              swap=$((swap + ${value:-0}))
-            done < <(pgrep -x soong_build 2>/dev/null || true)
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-              "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$phase" "$mem_avail" "$swap_free" \
-              "$rss" "$hwm" "$swap" "$pids" \
-              "$(cgroup_read memory.current)" "$(cgroup_read memory.peak)" \
-              "$(cgroup_read memory.swap.current)" "$(cgroup_read memory.swap.peak)" \
-              "$(cgroup_event_value oom)" "$(cgroup_event_value oom_kill)" \
-              >> "$SOONG_MEMORY_TSV"
-          }
-          : > /tmp/rbe-test/memory-pressure.log
-          if [ -n "$CGROUP_MEMORY_DIR" ] && [ -r "$CGROUP_MEMORY_DIR/memory.events" ]; then
-            cp "$CGROUP_MEMORY_DIR/memory.events" \
-              /tmp/rbe-test/cgroup-memory-events-before-graph.txt || true
-          fi
-          record_memory_pressure pre-graph
-          sample_soong_memory pre-graph
-
-          # Shared supervisor for both 'nothing' and 'bacon'. It records an
-          # explicit phase exit code and distinguishes disk/time stops from
-          # compiler errors; an external SIGTERM is separately captured above.
-          run_monitored_m() {
-            local phase="$1" target="$2" log_file="$3" status_file="$4"
-            local disk_trip="$5" time_trip="$6"
-            local available now free_gib mem_kib seconds_left last_write idle_secs
-            local line wait_rc warned=0 idle_warned=0 tick sample_counter=0
-            rm -f "$status_file" "$disk_trip" "$time_trip"
-            (
-              # Avoid trap messages being written into Soong's stdout.
-              trap - ERR TERM INT
-              set +e
-              set -o pipefail
-              if [ "$phase" = build-graph ]; then
-                export GOMAXPROCS="$SOONG_GRAPH_GOMAXPROCS"
-                echo "=== SOONG GRAPH GO RUNTIME: GOGC=$GOGC GOMAXPROCS=$GOMAXPROCS GOMEMLIMIT=${GOMEMLIMIT:-not-supported} ==="
-              else
-                # Only graph generation uses the reduced Go CPU parallelism.
-                unset GOMAXPROCS || true
-              fi
-              m -j2 --skip-soong-tests "$target" 2>&1 | tee "$log_file"
-              rc=${PIPESTATUS[0]}
-              printf '%s\n' "$rc" > "$status_file"
-              exit "$rc"
-            ) &
-            BUILD_PID=$!
-            echo "=== $phase PID=$BUILD_PID; 10s DISK / RAM / TIME SUPERVISOR ==="
-            while kill -0 "$BUILD_PID" 2>/dev/null; do
-              available="$(disk_sample "$phase-sample")"
-              now="$(date +%s)"
-              free_gib=$((available / 1073741824))
-              mem_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-              seconds_left=$((SOFT_DEADLINE_EPOCH - now))
-              last_write="$(stat -c '%Y' "$log_file" 2>/dev/null || printf '%s\n' "$now")"
-              idle_secs=$((now - last_write))
-              if (( idle_secs < 0 )); then idle_secs=0; fi
-              swap_free_kib="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
-              line="$(date -u +'%Y-%m-%dT%H:%M:%SZ') phase=$phase pid=$BUILD_PID disk_safe_free=${free_gib}GiB mem_available=${mem_kib}KiB swap_free=${swap_free_kib}KiB log_idle=${idle_secs}s soft_deadline_remaining=${seconds_left}s"
-              if (( BTRFS_ACTIVE == 1 )); then
-                root_now="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
-                inner_now="$(df -B1 --output=avail "$PWD" | tail -n1 | tr -d ' ')"
-                line="$line host_free_gib=$((root_now / 1073741824)) btrfs_free_gib=$((inner_now / 1073741824))"
-              fi
-              echo "$line" | tee -a /tmp/rbe-test/resource-monitor.log
-              sample_soong_memory "$phase"
-              # Live Actions log survives more cancellation scenarios than
-              # artifact upload. No arguments/credentials are printed.
-              if [ "$phase" = build-graph ]; then
-                soong_rss=0; soong_vmswap=0
-                while IFS= read -r spid; do
-                  [ -r "/proc/$spid/status" ] || continue
-                  sr="$(awk '/^VmRSS:/ {print $2}' "/proc/$spid/status" 2>/dev/null)"
-                  ss="$(awk '/^VmSwap:/ {print $2}' "/proc/$spid/status" 2>/dev/null)"
-                  soong_rss=$((soong_rss + ${sr:-0}))
-                  soong_vmswap=$((soong_vmswap + ${ss:-0}))
-                done < <(pgrep -x soong_build 2>/dev/null || true)
-                zram_used_kib=0; zram_physical_kib=0
-                if [ -s /tmp/rbe-test/zram-device.txt ]; then
-                  zram_dev="$(cat /tmp/rbe-test/zram-device.txt)"
-                  zram_node="${zram_dev##*/}"
-                  if [ -r "/sys/block/$zram_node/mm_stat" ]; then
-                    read -r z_orig z_compressed z_physical _ < "/sys/block/$zram_node/mm_stat" || true
-                    zram_used_kib=$(( ${z_orig:-0} / 1024 ))
-                    zram_physical_kib=$(( ${z_physical:-0} / 1024 ))
-                  fi
-                fi
-                echo "SOONG_MEMORY rss_kib=$soong_rss vm_swap_kib=$soong_vmswap zram_logical_kib=$zram_used_kib zram_physical_kib=$zram_physical_kib cgroup_oom_kill=$(cgroup_event_value oom_kill)"
-              fi
-              # Capture the compiled binary's own Go version once it exists.
-              # A runtime compiled with Go 1.18 cannot enforce GOMEMLIMIT.
-              if [ "$phase" = build-graph ] && [ ! -s /tmp/rbe-test/soong-build-binary-go-version.txt ] \
-                 && [ -x "$ANDROID_BUILD_TOP/out/host/linux-x86/bin/soong_build" ]; then
-                if [ -x "$GO_BIN" ]; then
-                  "$GO_BIN" version -m "$ANDROID_BUILD_TOP/out/host/linux-x86/bin/soong_build" \
-                    > /tmp/rbe-test/soong-build-binary-go-version.txt 2>&1 || true
-                fi
-              fi
-              # Deep samples every 30s or every 10s when RAM is under 4GiB.
-              if (( sample_counter % 3 == 0 || mem_kib < 4194304 )); then
-                record_memory_pressure "$phase"
-              fi
-              sample_counter=$((sample_counter + 1))
-
-              if (( available < DISK_STOP_GIB * 1073741824 )); then
-                echo "Disk safety stop in $phase: available below ${DISK_STOP_GIB} GiB" | tee "$disk_trip"
-                echo "::error::Insufficient disk in $phase; terminating children."
-                stop_process_tree "$BUILD_PID"
-                break
-              fi
-              if (( now >= SOFT_DEADLINE_EPOCH )); then
-                echo "Time safety stop in $phase: passed ${FULL_ROM_SOFT_DEADLINE_MINUTES}-minute whole-job deadline" | tee "$time_trip"
-                echo "::error::Stopping $phase before GitHub job timeout to preserve diagnostics."
-                stop_process_tree "$BUILD_PID"
-                break
-              fi
-              if (( available < DISK_WARN_GIB * 1073741824 && warned == 0 )); then
-                echo "::warning::Less than ${DISK_WARN_GIB} GiB available in $phase."
-                warned=1
-              fi
-              if (( idle_secs >= 900 && idle_warned == 0 )); then
-                echo "::warning::$phase has produced no new log output for 15 minutes; inspect CPU/process state."
-                ps -o pid,ppid,stat,etime,%cpu,%mem,args -p "$BUILD_PID" || true
-                idle_warned=1
-              fi
-              for ((tick=0; tick<2; tick++)); do
-                kill -0 "$BUILD_PID" 2>/dev/null || break
-                sleep 5
-              done
-            done
-            set +e
-            wait "$BUILD_PID"
-            wait_rc=$?
-            set -e
-            BUILD_PID=''
-            MONITORED_RC="$wait_rc"
-            if [ -s "$status_file" ]; then MONITORED_RC="$(cat "$status_file")"; fi
-            if [ -s "$disk_trip" ]; then MONITORED_RC=70; fi
-            if [ -s "$time_trip" ]; then MONITORED_RC=71; fi
-            disk_sample "post-$phase" >/dev/null
-            sample_soong_memory "post-$phase exit=$MONITORED_RC"
-            record_memory_pressure "post-$phase exit=$MONITORED_RC"
-            echo "=== $phase EXIT: $MONITORED_RC ==="
-          }
-
-          enforce_initial_disk_guard pre-graph
-          mark_stage build-graph
-          # From here m-nothing.log and full-rom-build.log capture build output.
-          # Do not mirror compiler output into configure-setup.log.
-          exec 1>&3 2>&4
-          exec 3>&- 4>&-
-          : > /tmp/rbe-test/resource-monitor.log
-          echo '=== GENERATE BUILD GRAPH (SKIP SOONG UNIT TESTS) ==='
-          run_monitored_m build-graph nothing \
-            /tmp/rbe-test/m-nothing.log \
-            /tmp/rbe-test/graph-exit-code.txt \
-            /tmp/rbe-test/graph-disk-stop-triggered.txt \
-            /tmp/rbe-test/graph-time-stop-triggered.txt
-          if [ "$MONITORED_RC" -ne 0 ]; then
-            echo '=== BUILD GRAPH LOG TAIL ==='
-            tail -n 180 /tmp/rbe-test/m-nothing.log 2>/dev/null || true
-            echo "::error::Soong build graph failed or was stopped (exit $MONITORED_RC)."
-            exit "$MONITORED_RC"
-          fi
-          # Soong's memory-heavy graph is complete. The prior run left only
-          # ~19 MiB used inside the 8-GiB graph-only swap file, but did not
-          # reclaim it because usage was nonzero. Evict tiny amounts safely.
-          # Never swapoff large/populated swap or unlink an active swap file.
-          mark_stage post-graph-swap-reclaim
-          GRAPH_SWAP=/mnt/soong-swap-graph
-          BASE_SWAP=/mnt/soong-swap-base
-          RECLAIM_STATUS=/tmp/rbe-test/graph-swap-reclaim.txt
-          MAX_RECLAIM_USED_BYTES=$((256 * 1024 * 1024))
-          MIN_RAM_MARGIN_BYTES=$((2 * 1024 * 1024 * 1024))
-          free_disk_before="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
-          graph_swap_used='na'
-          reclaim_reason='not-present'
-          reclaim_result='retained'
-          if [ -f "$GRAPH_SWAP" ]; then
-            graph_swap_used="$(swapon --bytes --noheadings --show=NAME,USED \
-              | awk -v path="$GRAPH_SWAP" '$1==path {print $2; found=1; exit} END {if (!found) print "na"}')"
-            mem_available_bytes="$(awk '/^MemAvailable:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)"
-            echo "=== GRAPH SWAP RECLAIM PRECHECK: used=${graph_swap_used}B mem_available=${mem_available_bytes}B ==="
-            swapon --show=NAME,TYPE,SIZE,USED,PRIO || true
-            if [[ ! "$graph_swap_used" =~ ^[0-9]+$ ]]; then
-              reclaim_reason='swap-not-active-or-usage-unknown'
-            elif ! swapon --noheadings --show=NAME | grep -Fxq "$BASE_SWAP"; then
-              reclaim_reason='baseline-swap-not-active'
-            elif pgrep -x soong_build >/dev/null 2>&1; then
-              reclaim_reason='soong-still-running'
-            elif (( graph_swap_used > MAX_RECLAIM_USED_BYTES )); then
-              reclaim_reason='more-than-256MiB-swapped'
-            elif (( mem_available_bytes < graph_swap_used + MIN_RAM_MARGIN_BYTES )); then
-              reclaim_reason='insufficient-RAM-margin'
-            else
-              # 90-second cap avoids unbounded stalls; swapoff remains best effort.
-              # If interrupted or unsuccessful, the file is preserved.
-              if sudo timeout --signal=TERM --kill-after=10s 90s swapoff "$GRAPH_SWAP"; then
-                reclaim_rc=0
-              else
-                reclaim_rc=$?
-              fi
-              if (( reclaim_rc == 0 )) \
-                 && ! swapon --noheadings --show=NAME | grep -Fxq "$GRAPH_SWAP"; then
-                sudo rm -f -- "$GRAPH_SWAP"
-                reclaim_result='reclaimed'
-                reclaim_reason='swapoff-success'
-                echo 'Graph-only swap deactivated and unlinked after safety checks.'
-              else
-                reclaim_reason="swapoff-failed-or-timeout-rc-${reclaim_rc}"
-                echo "::warning::Swapoff did not safely complete (rc=$reclaim_rc); retained graph swap file."
-              fi
-            fi
-          fi
-          free_disk_after="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
-          freed_disk_bytes=$((free_disk_after - free_disk_before))
-          {
-            printf 'status=%s\nreason=%s\nused_bytes=%s\n' \
-              "$reclaim_result" "$reclaim_reason" "$graph_swap_used"
-            printf 'disk_free_before_bytes=%s\ndisk_free_after_bytes=%s\nreclaimed_disk_bytes=%s\n' \
-              "$free_disk_before" "$free_disk_after" "$freed_disk_bytes"
-          } | tee "$RECLAIM_STATUS"
-          if [ "$reclaim_result" != reclaimed ]; then
-            echo "::warning::Graph-only swap retained: $reclaim_reason. The 8-GiB file may constrain the ROM build."
-          fi
-          swapon --show=NAME,TYPE,SIZE,USED,PRIO || true
-          df -h /home/runner/work/los
           echo "=== CLEANING UP GIT OBJECTS TO SAVE SPACE ==="
-          # Remove massive git object databases that we don't need for the build
+          # Remove massive git object databases that we don't need for the build.
           # The files remain checked out in the working directory, so Soong won't fail!
           rm -rf .repo/project-objects/platform/prebuilts/abi-dumps/*.git || true
           rm -rf .repo/project-objects/platform/prebuilts/rust.git || true
@@ -1704,13 +784,36 @@ jobs:
           rm -rf .repo/project-objects/platform/prebuilts/sdk.git || true
           rm -rf .repo/project-objects/LineageOS/android_cts.git || true
           rm -rf .repo/project-objects/platform/external/deqp.git || true
+
+          # More safely removable git objects for prebuilts:
+          rm -rf .repo/project-objects/platform/prebuilts/misc.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/tools.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/runtime.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/jdk/jdk*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/maven_repo/*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/vndk/*.git || true
+          rm -rf .repo/project-objects/platform/external/swiftshader.git || true
+          rm -rf .repo/project-objects/platform/external/libabigail.git || true
+          # To prevent 'repo manifest -r' from failing due to missing git repositories
+          # during the 'build-manifest.xml' generation step, we stub out the repo command
+          # with a valid Python script since it is executed via `python3 .repo/repo/repo`.
           mv .repo/repo/repo .repo/repo/repo.bak || true
           echo -e '#!/usr/bin/env python3
-          print("<manifest></manifest>")' > .repo/repo/repo
+print("<manifest></manifest>")' > .repo/repo/repo
           chmod +x .repo/repo/repo
-          
+
           echo "=== DISK SPACE AFTER GIT OBJECTS CLEANUP ==="
           df -h / /home/runner/work/los
+
+          enforce_initial_disk_guard pre-graph
+
+          mark_stage build-graph
+          # From here m-nothing.log and full-rom-build.log capture build output.
+          # Do not mirror many gigabytes of compiler output into configure-setup.log.
+          exec 1>&3 2>&4
+          exec 3>&- 4>&-
+          echo "=== GENERATE BUILD GRAPH ==="
+          m nothing 2>&1 | tee /tmp/rbe-test/m-nothing.log
           enforce_initial_disk_guard post-graph
 
           BUILD_NINJA="$ANDROID_BUILD_TOP/out/combined-${TARGET_PRODUCT}.ninja"
@@ -1771,17 +874,100 @@ jobs:
           echo "The previous libbase test passed; this run compiles and packages the full ROM."
           enforce_initial_disk_guard pre-build
 
+          BUILD_LOG=/tmp/rbe-test/full-rom-build.log
+          BUILD_STATUS_FILE=/tmp/rbe-test/build-exit-code.txt
+          DISK_TRIP_FILE=/tmp/rbe-test/disk-stop-triggered.txt
+          TIME_TRIP_FILE=/tmp/rbe-test/time-stop-triggered.txt
+          rm -f "$BUILD_STATUS_FILE" "$DISK_TRIP_FILE" "$TIME_TRIP_FILE"
+
+          if [ -s /tmp/rbe-test/job-start-epoch.txt ]; then
+            JOB_START_EPOCH="$(cat /tmp/rbe-test/job-start-epoch.txt)"
+          else
+            JOB_START_EPOCH="$(date +%s)"
+          fi
+          SOFT_DEADLINE_EPOCH=$(( JOB_START_EPOCH + FULL_ROM_SOFT_DEADLINE_MINUTES * 60 ))
+          echo "=== SOFT DEADLINE (UTC) ==="
+          date -u -d "@$SOFT_DEADLINE_EPOCH" +'%Y-%m-%dT%H:%M:%SZ'
           if (( $(date +%s) >= SOFT_DEADLINE_EPOCH )); then
-            echo '::error::Not enough whole-job time remains to begin full ROM build.'
+            echo "::error::Not enough job time remains to begin full ROM build."
             exit 71
           fi
-          BUILD_LOG=/tmp/rbe-test/full-rom-build.log
+
           mark_stage full-rom-build
-          run_monitored_m full-rom-build bacon "$BUILD_LOG" \
-            /tmp/rbe-test/build-exit-code.txt \
-            /tmp/rbe-test/disk-stop-triggered.txt \
-            /tmp/rbe-test/time-stop-triggered.txt
-          BUILD_RC="$MONITORED_RC"
+          # Run the build in a child shell and keep its exit status after tee.
+          # The supervisor retains control to stop on low disk/time.
+          (
+            set +e
+            set -o pipefail
+            m -j2 bacon 2>&1 | tee "$BUILD_LOG"
+            rc=${PIPESTATUS[0]}
+            printf '%s\n' "$rc" > "$BUILD_STATUS_FILE"
+            exit "$rc"
+          ) &
+          BUILD_PID=$!
+
+          stop_process_tree() {
+            local pid="$1" child
+            while IFS= read -r child; do
+              [ -n "$child" ] || continue
+              stop_process_tree "$child"
+            done < <(pgrep -P "$pid" 2>/dev/null || true)
+            kill -TERM "$pid" 2>/dev/null || true
+          }
+          cleanup_build_supervisor() {
+            if kill -0 "$BUILD_PID" 2>/dev/null; then
+              stop_process_tree "$BUILD_PID"
+            fi
+          }
+          # The single on_exit trap handles both child cleanup and stage logs.
+          echo '=== FULL ROM STORAGE / MEMORY / TIME MONITOR (30s) ==='
+          : > /tmp/rbe-test/resource-monitor.log
+          WARNED=0
+          while kill -0 "$BUILD_PID" 2>/dev/null; do
+            avail="$(disk_sample full-rom-sample)"
+            now="$(date +%s)"
+            free_gib=$((avail / 1073741824))
+            mem_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+            seconds_left=$((SOFT_DEADLINE_EPOCH - now))
+            line="$(date -u +'%Y-%m-%dT%H:%M:%SZ') free=${free_gib}GiB mem_available=${mem_kib}KiB soft_deadline_remaining=${seconds_left}s"
+            echo "$line" | tee -a /tmp/rbe-test/resource-monitor.log
+
+            if (( avail < DISK_STOP_GIB * 1073741824 )); then
+              echo "Disk safety stop: available below ${DISK_STOP_GIB} GiB" | tee "$DISK_TRIP_FILE"
+              echo "::error::Insufficient disk space; stopping full ROM build."
+              stop_process_tree "$BUILD_PID"
+              break
+            fi
+            if (( now >= SOFT_DEADLINE_EPOCH )); then
+              echo "Time safety stop: passed ${FULL_ROM_SOFT_DEADLINE_MINUTES} minute whole-job deadline" | tee "$TIME_TRIP_FILE"
+              echo "::error::Stopping build before the 6-hour GitHub job limit to preserve diagnostics."
+              stop_process_tree "$BUILD_PID"
+              break
+            fi
+            if (( avail < DISK_WARN_GIB * 1073741824 && WARNED == 0 )); then
+              echo "::warning::Less than ${DISK_WARN_GIB} GiB remains; full ROM build may be stopped."
+              WARNED=1
+            fi
+            # Wait up to 30 seconds without delaying a completed build.
+            for ((tick=0; tick<6; tick++)); do
+              kill -0 "$BUILD_PID" 2>/dev/null || break
+              sleep 5
+            done
+          done
+
+          set +e
+          wait "$BUILD_PID"
+          WAIT_RC=$?
+          set -e
+          BUILD_PID=''
+          BUILD_RC="$WAIT_RC"
+          if [ -s "$BUILD_STATUS_FILE" ]; then
+            BUILD_RC="$(cat "$BUILD_STATUS_FILE")"
+          fi
+          if [ -s "$DISK_TRIP_FILE" ]; then BUILD_RC=70; fi
+          if [ -s "$TIME_TRIP_FILE" ]; then BUILD_RC=71; fi
+          disk_sample post-full-rom-build >/dev/null
+          echo "=== FULL ROM BUILD EXIT: $BUILD_RC ==="
 
           if [ "$BUILD_RC" -ne 0 ]; then
             echo '=== BUILD ERROR LINES (LAST 120 MATCHES) ==='
@@ -1858,51 +1044,6 @@ jobs:
             fi
             echo ''
             echo "Disk guard: warning under ${DISK_WARN_GIB} GiB; safe stop under ${DISK_STOP_GIB} GiB."
-            echo "Workspace: **${WORKSPACE_STORAGE}**; Ninja remote=${NINJA_REMOTE_NUM_JOBS}, local=2, highmem=${NINJA_HIGHMEM_NUM_JOBS}."
-            if [ -s /tmp/rbe-test/btrfs-storage-samples.tsv ]; then
-              echo '### Btrfs ZSTD host/root accounting'
-              echo '```text'
-              tail -n 8 /tmp/rbe-test/btrfs-storage-samples.tsv
-              echo '```'
-            fi
-            if [ -s /tmp/rbe-test/webview-lfs-check.log ]; then
-              echo '### WebView LFS validation'
-              echo '```text'
-              tail -n 15 /tmp/rbe-test/webview-lfs-check.log
-              echo '```'
-            fi
-            echo "Soong: GOGC=${SOONG_GOGC}; GOMEMLIMIT=${SOONG_GOMEMLIMIT} (Go >=1.19 only); graph GOMAXPROCS=${SOONG_GRAPH_GOMAXPROCS}."
-            echo "Hybrid swap requested: ZRAM=${SOONG_ZRAM_GIB}GiB logical; disk=${SOONG_DISK_SWAP_GIB}GiB (post-graph base ${POST_GRAPH_DISK_SWAP_GIB}GiB)."
-            echo '### Soong Go/runtime verification'
-            if [ -s /tmp/rbe-test/soong-go-runtime.txt ]; then
-              echo '```text'
-              cat /tmp/rbe-test/soong-go-runtime.txt
-              echo '```'
-            fi
-            if [ -s /tmp/rbe-test/soong-build-binary-go-version.txt ]; then
-              echo '```text'
-              cat /tmp/rbe-test/soong-build-binary-go-version.txt
-              echo '```'
-            fi
-            if [ -s /tmp/rbe-test/soong-memory-samples.tsv ]; then
-              awk -F '\t' 'NR > 1 && NF >= 14 {
-                if($5 > maxrss) maxrss=$5;
-                if($7 > maxswap) maxswap=$7;
-                if($3 > 0 && (minram == 0 || $3 < minram)) minram=$3;
-                if($14 != "na" && $14 != "" && $14+0 > maxkill) maxkill=$14+0
-              } END {
-                printf "Peak sampled soong_build RSS: **%.2f GiB**; VmSwap: **%.2f GiB**; lowest available RAM: **%.2f GiB**.\n", maxrss/1048576, maxswap/1048576, minram/1048576;
-                printf "Maximum sampled cgroup oom_kill counter: **%d** (check baseline for changes).\n", maxkill
-              }' /tmp/rbe-test/soong-memory-samples.tsv
-            fi
-            for status in /tmp/rbe-test/zram-status.txt /tmp/rbe-test/swap-status.txt /tmp/rbe-test/graph-swap-reclaim.txt; do
-              if [ -s "$status" ]; then
-                echo '```text'
-                echo "$(basename "$status")"
-                cat "$status"
-                echo '```'
-              fi
-            done
             if [ -s /tmp/rbe-test/disk-stop-triggered.txt ]; then
               echo '**Guard triggered: build terminated due to low disk.**'
             fi
@@ -1959,16 +1100,6 @@ jobs:
             fi
             echo 'Storage profiling did not modify source or Git objects.'
             echo ''
-            echo '### P1 host-binary / historical ABI worktree trim'
-            if [ -s /tmp/rbe-test/storage-trim-p1.log ]; then
-              echo '```text'
-              grep -E '^(TRIM |SKIP |disk_available_(before|after|delta)_bytes=|P1 trim changes)' \
-                /tmp/rbe-test/storage-trim-p1.log | tail -n 30 || true
-              echo '```'
-            else
-              echo 'P1 trim did not execute.'
-            fi
-            echo ''
             echo '### P0 reclient trim'
             if [ -s /tmp/rbe-test/p0-storage-trim-status.txt ]; then
               cat /tmp/rbe-test/p0-storage-trim-status.txt
@@ -2008,17 +1139,8 @@ jobs:
             else
               echo 'No verified ROM ZIP created in this run.'
             fi
-            if [ -s /tmp/rbe-test/time-stop-triggered.txt ] || [ -s /tmp/rbe-test/graph-time-stop-triggered.txt ]; then
-              echo '**Soft job deadline triggered during graph generation or ROM build.**'
-            fi
-            if [ -s /tmp/rbe-test/graph-disk-stop-triggered.txt ]; then
-              echo '**Build graph stopped for low disk space.**'
-            fi
-            if [ -s /tmp/rbe-test/termination-signal.txt ]; then
-              echo '**External termination signal observed:**'
-              echo '```text'
-              cat /tmp/rbe-test/termination-signal.txt
-              echo '```'
+            if [ -s /tmp/rbe-test/time-stop-triggered.txt ]; then
+              echo '**Soft job deadline triggered; build stopped to retain diagnostics.**'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo '=== FINAL DISK AND MEMORY ==='
@@ -2109,61 +1231,9 @@ jobs:
           tail -n 260 /tmp/rbe-test/full-rom-build.log 2>/dev/null || true
           echo "=== BUILD STOP REASONS ==="
           cat /tmp/rbe-test/*-stop-triggered.txt 2>/dev/null || true
-          echo '=== EXTERNAL TERMINATION SIGNAL ==='
-          cat /tmp/rbe-test/termination-signal.txt 2>/dev/null || true
-          echo '=== HYBRID SWAP STATUS ==='
-          cat /tmp/rbe-test/zram-status.txt /tmp/rbe-test/swap-status.txt \
-            /tmp/rbe-test/graph-swap-reclaim.txt 2>/dev/null || true
-          swapon --show=NAME,TYPE,SIZE,USED,PRIO || true
-          zramctl || true
-          echo '=== MEMORY PRESSURE TAIL ==='
-          tail -n 160 /tmp/rbe-test/memory-pressure.log 2>/dev/null || true
-          echo '=== SOONG GO VERSION AND ACTIVE GC LIMIT ==='
-          cat /tmp/rbe-test/soong-go-runtime.txt 2>/dev/null || true
-          cat /tmp/rbe-test/soong-build-binary-go-version.txt 2>/dev/null || true
-          echo '=== SOONG MEMORY SAMPLES TAIL ==='
-          tail -n 30 /tmp/rbe-test/soong-memory-samples.tsv 2>/dev/null || true
-          echo '=== CGROUP OOM EVENT BASELINE ==='
-          cat /tmp/rbe-test/cgroup-memory-events-before-graph.txt 2>/dev/null || true
-          echo '=== P1 STORAGE TRIM SUMMARY ==='
-          tail -n 50 /tmp/rbe-test/storage-trim-p1.log 2>/dev/null || true
-          echo '=== SOONG GRAPH EXIT CODE ==='
-          cat /tmp/rbe-test/graph-exit-code.txt 2>/dev/null || true
           echo "=== ROM ZIP FILES IF PRESENT ==="
           find /home/runner/work/los/out/target/product/star2lte -maxdepth 1 \
             -type f -name 'lineage-*.zip' -printf '%p %s bytes\n' 2>/dev/null || true
-
-      - name: Release hybrid swap at job end (best effort)
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          # On a canceled/low-memory runner, swapoff can allocate several GiB
-          # and trigger another OOM. Do not swapoff non-empty swap devices.
-          # Runner is ephemeral; leave in-use devices until VM teardown.
-          for SWAPFILE in /mnt/soong-swap-graph /mnt/soong-swap-base; do
-            if [ ! -f "$SWAPFILE" ]; then continue; fi
-            USED="$(swapon --bytes --noheadings --show=NAME,USED | awk -v path="$SWAPFILE" '$1==path {print $2; found=1; exit} END {if (!found) print "na"}')"
-            if [ "$USED" = 0 ] && sudo swapoff "$SWAPFILE"; then
-              sudo rm -f "$SWAPFILE"
-              echo "Released unused swap $SWAPFILE"
-            else
-              echo "Retained swap $SWAPFILE used_bytes=$USED (na = unknown; not unlinking)"
-            fi
-          done
-          if [ -s /tmp/rbe-test/zram-device.txt ]; then
-            ZRAM_DEV="$(cat /tmp/rbe-test/zram-device.txt)"
-            USED="$(swapon --bytes --noheadings --show=NAME,USED | awk -v path="$ZRAM_DEV" '$1==path {print $2; found=1; exit} END {if (!found) print "na"}')"
-            if [ "$USED" = 0 ] && sudo swapoff "$ZRAM_DEV"; then
-              sudo zramctl --reset "$ZRAM_DEV" || true
-              echo "Released unused zram $ZRAM_DEV"
-            else
-              echo "Retained zram $ZRAM_DEV used_bytes=$USED"
-            fi
-          fi
-          echo '=== SWAP AFTER SAFE CLEANUP ==='
-          swapon --show || true
-          df -h /
 
       - name: Stop BuildBuddy gRPC bridge and remove credentials
         if: always()
@@ -2209,25 +1279,3 @@ jobs:
             /home/runner/work/los/.repo/repo.log
           if-no-files-found: warn
           retention-days: 7
-
-      # Always run AFTER ROM and diagnostic uploads; keep mount live for upload.
-      - name: Unmount compressed workspace (best effort)
-        if: ${{ always() && inputs.workspace_storage == 'btrfs_zstd' }}
-        shell: bash
-        run: |
-          set +e
-          WORKSPACE=/home/runner/work/los
-          BACKING=/tmp/los20-workspace-btrfs.img
-          echo '=== BTRFS FINAL PHYSICAL USAGE ==='
-          df -hT / "$WORKSPACE"
-          du -h "$BACKING" 2>/dev/null || true
-          sync
-          if mountpoint -q "$WORKSPACE"; then
-            sudo umount "$WORKSPACE"
-          fi
-          if ! mountpoint -q "$WORKSPACE"; then
-            rm -f -- "$BACKING"
-            echo 'Btrfs workspace detached; backing image removed.'
-          else
-            echo '::warning::Btrfs mount busy; leaving image to runner teardown.'
-          fi
