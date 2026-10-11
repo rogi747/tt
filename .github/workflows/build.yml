@@ -775,6 +775,36 @@ jobs:
             fi
             echo "=== DISK AT ${stage}: $((available / 1073741824)) GiB free ==="
           }
+          echo "=== CLEANING UP GIT OBJECTS TO SAVE SPACE ==="
+          # Remove massive git object databases that we don't need for the build.
+          # The files remain checked out in the working directory, so Soong won't fail!
+          rm -rf .repo/project-objects/platform/prebuilts/abi-dumps/*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/rust.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/gradle-plugin.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/sdk.git || true
+          rm -rf .repo/project-objects/LineageOS/android_cts.git || true
+          rm -rf .repo/project-objects/platform/external/deqp.git || true
+
+          # More safely removable git objects for prebuilts:
+          rm -rf .repo/project-objects/platform/prebuilts/misc.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/tools.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/runtime.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/jdk/jdk*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/maven_repo/*.git || true
+          rm -rf .repo/project-objects/platform/prebuilts/vndk/*.git || true
+          rm -rf .repo/project-objects/platform/external/swiftshader.git || true
+          rm -rf .repo/project-objects/platform/external/libabigail.git || true
+          # To prevent 'repo manifest -r' from failing due to missing git repositories
+          # during the 'build-manifest.xml' generation step, we stub out the repo command
+          # with a valid Python script since it is executed via `python3 .repo/repo/repo`.
+          mv .repo/repo/repo .repo/repo/repo.bak || true
+          echo -e '#!/usr/bin/env python3
+print("<manifest></manifest>")' > .repo/repo/repo
+          chmod +x .repo/repo/repo
+
+          echo "=== DISK SPACE AFTER GIT OBJECTS CLEANUP ==="
+          df -h / /home/runner/work/los
+
           enforce_initial_disk_guard pre-graph
 
           mark_stage build-graph
