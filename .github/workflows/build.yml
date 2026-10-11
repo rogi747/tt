@@ -1704,11 +1704,6 @@ jobs:
           rm -rf .repo/project-objects/platform/prebuilts/sdk.git || true
           rm -rf .repo/project-objects/LineageOS/android_cts.git || true
           rm -rf .repo/project-objects/platform/external/deqp.git || true
-          # with a valid Python script since it is executed via `python3 .repo/repo/repo`.
-          mv .repo/repo/repo .repo/repo/repo.bak || true
-          echo -e '#!/usr/bin/env python3
-print("<manifest></manifest>")' > .repo/repo/repo
-          chmod +x .repo/repo/repo
 
           echo "=== DISK SPACE AFTER GIT OBJECTS CLEANUP ==="
           df -h / /home/runner/work/los
